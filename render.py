@@ -43,10 +43,20 @@ PAPER = 255                # 纯白
 
 FONT_CACHE: dict = {}
 
+# 按顺序尝试。Linux（VPS）用 Noto Sans CJK，macOS 用冬青黑体/黑体-简。
+# ttc 的 face index 2 = 简体中文（SC）。
+NOTO = "/usr/share/fonts/opentype/noto"
 WEIGHT_FILES = {
-    "bold": [("/System/Library/Fonts/Hiragino Sans GB.ttc", 2)],
-    "medium": [("/System/Library/Fonts/STHeiti Medium.ttc", 1)],
+    "bold": [
+        (f"{NOTO}/NotoSansCJK-Bold.ttc", 2),
+        ("/System/Library/Fonts/Hiragino Sans GB.ttc", 2),
+    ],
+    "medium": [
+        (f"{NOTO}/NotoSansCJK-Regular.ttc", 2),
+        ("/System/Library/Fonts/STHeiti Medium.ttc", 1),
+    ],
     "body": [
+        (f"{NOTO}/NotoSansCJK-Regular.ttc", 2),
         ("/System/Library/Fonts/STHeiti Medium.ttc", 1),
         ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
         ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
