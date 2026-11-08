@@ -507,6 +507,9 @@ def _market_section(ops, market, market_all, y, bottom, now):
                 nx = None
 
             reserve = 250 if when else 10
+            # 公司名去后缀后如果正好等于代码，就别重复画了（KKR / KKR）
+            if nx is not None and name.strip().upper() == sym.upper():
+                name = ""
             if nx is not None and name:
                 room = W - MARGIN - reserve - nx
                 while name and name_f.getlength(name) > room:
