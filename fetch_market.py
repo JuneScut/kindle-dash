@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -22,6 +23,8 @@ import requests   # 用 requests 而不是 urllib：后者在 macOS 的 Python �
 import et_time
 
 API = "https://api.nasdaq.com/api/calendar/earnings?date={}"
+SCREENER = ("https://api.nasdaq.com/api/screener/stocks"
+            "?tableonly=true&limit=25&offset=0&download=true")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 
 # 无论市值多少都保留（你特别关心的票）
@@ -38,6 +41,39 @@ SUFFIX = re.compile(
     re.I)
 
 
+def norm_sym(sym: str) -> str:
+    """BRK.A / BRK/A / brk.a 统一成 BRKA"""
+    return (sym or "").upper().replace(".", "").replace("/", "").strip()
+
+
+def load_us_symbols(here: Path, max_age_days: int = 7) -> set[str]:
+    """从纳斯达克筛选器拉一份"美国公司"白名单，缓存一周。
+
+    财报日历里混着 ADR 和海外上市（三菱日联、巴西石油…），
+    这个名单用来把它们滤掉。拉失败就返回空集合，表示不过滤。
+    """
+    cache = here / "data" / "us_symbols.json"
+    if cache.exists() and (time.time() - cache.stat().st_mtime) < max_age_days * 86400:
+        try:
+            return set(json.loads(cache.read_text(encoding="utf-8")))
+        except json.JSONDecodeError:
+            pass
+    try:
+        r = requests.get(SCREENER, headers={"User-Agent": UA}, timeout=60)
+        r.raise_for_status()
+        rows = ((r.json().get("data") or {}).get("rows")) or []
+        us = {norm_sym(x["symbol"]) for x in rows
+              if (x.get("country") or "").strip().lower() == "united states"}
+        if us:
+            cache.parent.mkdir(exist_ok=True)
+            cache.write_text(json.dumps(sorted(us)), encoding="utf-8")
+            print(f"  美股白名单: {len(us)} 只（已缓存）", flush=True)
+        return us
+    except Exception as e:                      # noqa: BLE001
+        print(f"  白名单拉取失败（本次不过滤）: {e}", flush=True)
+        return set()
+
+
 def load_cn_names(here: Path) -> dict[str, str]:
     f = here / "data" / "company_cn.json"
     if not f.exists():
@@ -51,6 +87,7 @@ def load_cn_names(here: Path) -> dict[str, str]:
 def short_name(name: str) -> str:
     """'Advanced Micro Devices, Inc.' -> 'Advanced Micro Devices'"""
     out = SUFFIX.sub("", name or "").strip(" ,.")
+    out = out.rstrip(" &,.").strip()
     return out or (name or "")
 
 
@@ -80,6 +117,7 @@ def main() -> int:
     args = ap.parse_args()
 
     cn = load_cn_names(here)
+    us = load_us_symbols(here)
     today = date.today()
     picked: list[dict] = []
     for i in range(args.days):
@@ -94,7 +132,9 @@ def main() -> int:
         rows = [r for r in rows if (r.get("symbol") or "").strip()]
         rows.sort(key=lambda r: cap(r.get("marketCap")), reverse=True)
         chosen = [r for r in rows
-                  if r["symbol"] in WATCHLIST or cap(r.get("marketCap")) >= args.min_cap * 1e9]
+                  if (not us or norm_sym(r["symbol"]) in us)      # 只要美股
+                  and (r["symbol"] in WATCHLIST
+                       or cap(r.get("marketCap")) >= args.min_cap * 1e9)]
         seen: set[str] = set()
         for r in chosen:
             sn = short_name(r.get("name", ""))

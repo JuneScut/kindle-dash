@@ -20,3 +20,4 @@ data/ticktick_token.json
 # ---- 设备调试产物 ----
 data/input-probe/
 *.hex
+data/us_symbols.json
