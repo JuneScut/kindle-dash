@@ -13,6 +13,10 @@
 
 # 配置里的地址不通时，扫一遍同网段找服务
 find_base() {
+    # 地址带路径（VPS 反代）就说明不是本机网段，别扫
+    case "$KINDLE_TODO_BASE" in
+        *://*/*) return 1 ;;
+    esac
     prefix=$(echo "$KINDLE_TODO_BASE" | sed 's|^http://||; s|\.[0-9]*:[0-9]*$||')
     port=$(echo "$KINDLE_TODO_BASE" | sed 's|.*:||')
     i=100
