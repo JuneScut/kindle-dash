@@ -69,7 +69,84 @@ sh device/install.sh
 
 **不需要 KUAL，不需要 SSH。** 越狱后 `documents/` 里的 `.sh` 文件会自动变成可点的"书"，点一下就以 root 执行（官方叫 scriptlet）。
 
-## 3. 数据源
+## 3. 部署到 VPS（推荐）
+
+放在 Mac 上跑有三个单点故障：Mac 要醒着、代理要活着、局域网 IP 不能变。搬到一台常开的 VPS 上全没了。
+
+### 3.1 环境
+
+```bash
+sudo apt install python3-pil python3-requests fonts-noto-cjk
+```
+
+> **中文字体是必须的**。Debian 默认一个 CJK 字体都没有，不装的话屏幕上全是豆腐块。
+> `render.py` 会优先找 `/usr/share/fonts/opentype/noto/NotoSansCJK-*.ttc` 的 index 2（简体中文）。
+
+### 3.2 代码与密钥
+
+```bash
+sudo git clone <你的仓库> /opt/kindle-dash
+sudo chown -R $USER:$USER /opt/kindle-dash
+```
+
+密钥**不进 git**，单独传：
+
+```bash
+scp data/ticktick_client.json data/ticktick_token.json vps:/opt/kindle-dash/data/
+ssh vps 'chmod 600 /opt/kindle-dash/data/ticktick_*.json'
+```
+
+### 3.3 systemd
+
+```ini
+# /etc/systemd/system/kindle-dash.service
+[Unit]
+Description=Kindle 墨水屏看板渲染服务
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<your-user>
+WorkingDirectory=/opt/kindle-dash
+ExecStart=/usr/bin/python3 -u serve.py --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now kindle-dash
+```
+
+注意 `--host 127.0.0.1`：服务不直接暴露，由 nginx 反代。
+
+### 3.4 nginx 反代（带口令的路径）
+
+不想新开端口，就挂在已有的 80 端口站点里加一个 **随机路径**：
+
+```nginx
+location /kd-<你的随机串>/ {
+    proxy_pass http://127.0.0.1:8000/;
+    add_header Cache-Control "no-store" always;
+}
+```
+
+> ⚠️ **随机串就是口令，绝对不要提交到仓库。** 路径公开等于看板公开 —— 上面有你的待办标题。
+
+Kindle 端最终访问：
+
+```
+http://<vps-ip>/kd-<随机串>/page/0.png
+```
+
+### 3.5 为什么用 HTTP 不用 HTTPS
+
+老 Kindle 的 TLS 栈验不过现代证书链（PW4 上踩过），而且 busybox `wget` 对 TLS 支持很差。看板内容只是待办标题，用 HTTP + 随机路径是够的。
+
+## 4. 数据源
 
 ### 本周美股大事件（自动）
 
@@ -124,7 +201,7 @@ python3 fetch_macro.py --dry-run   # 先看结果
 
 > 兜底：如果哪天 Newsquawk 改了版式，脚本会报"没解析出事件"并**保留原文件不动**，`data/macro.json` 仍可手工维护。
 
-## 4. 手势操作
+## 5. 手势操作
 
 看板运行时，触摸屏是可用的：
 
@@ -190,7 +267,7 @@ done
 
 调试时：`export TOUCH_DEBUG=1` 再跑 `touch-watch.sh`，会逐条记录事件和心跳，日志在 `/mnt/us/kindle-todo/touch.log`。
 
-## 5. 越狱记录（这台设备的实际路径）
+## 6. 越狱记录（这台设备的实际路径）
 
 | 项 | 值 |
 |---|---|
@@ -227,7 +304,7 @@ done
 
 ---
 
-## 6. 耗电与上墙
+## 7. 耗电与上墙
 
 | 方式 | 大致续航 |
 |---|---|
@@ -248,7 +325,7 @@ PW4 带前光，晚上要开灯才看得见，开灯就是持续耗电；挂有�
 
 ---
 
-## 7. 参考
+## 8. 参考
 
 - [op7418/ai-desk-card](https://github.com/op7418/ai-desk-card) —— 这套哑终端架构的源头
 - [dietrichmax/dashink](https://github.com/dietrichmax/dashink) —— Flask + Pillow 的 Kindle 版实现
