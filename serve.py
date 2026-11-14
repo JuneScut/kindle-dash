@@ -135,28 +135,42 @@ def sync_cutoffs(now: datetime) -> tuple[datetime, datetime]:
     return daily, weekly
 
 
-def refresh_due(now: datetime, retry_after: dict[str, float]) -> None:
+def refresh_market(daily_market: bool) -> bool:
+    if daily_market:
+        # 财报每天滚动，宏观周报晚发或暂时不可用时仍可同步财报。
+        run_fetch("fetch_macro.py", "--rolling")
+        return run_fetch("fetch_market.py", "--days", "7")
+    return run_fetch("fetch_macro.py", "--current-week") and run_fetch("fetch_market.py")
+
+
+def refresh_todos() -> bool:
+    if not run_fetch("fetch_ticktick.py", "--all", "--max", "10", "--projects", TICKTICK_PROJECTS):
+        return False
+    sync_todos()
+    return True
+
+
+def refresh_due(now: datetime, retry_after: dict[str, float], daily_market: bool = False) -> None:
     daily, weekly = sync_cutoffs(now)
+    market_cutoff = daily if daily_market else weekly
     board = sync_todos()
     todo_stamp = update_time(board.get("todo_updated"))
     market_stamp = update_time(board.get("market_updated") or board.get("updated"))
 
     if (todo_stamp is None or todo_stamp < daily) and time.monotonic() >= retry_after.get("todo", 0):
-        if run_fetch("fetch_ticktick.py", "--all", "--max", "10", "--projects", TICKTICK_PROJECTS):
-            sync_todos()
-        else:
+        if not refresh_todos():
             retry_after["todo"] = time.monotonic() + SYNC_RETRY_SECONDS
 
-    if (market_stamp is None or market_stamp < weekly) and time.monotonic() >= retry_after.get("market", 0):
-        if not (run_fetch("fetch_macro.py", "--current-week") and run_fetch("fetch_market.py")):
+    if (market_stamp is None or market_stamp < market_cutoff) and time.monotonic() >= retry_after.get("market", 0):
+        if not refresh_market(daily_market):
             retry_after["market"] = time.monotonic() + SYNC_RETRY_SECONDS
 
 
-def auto_refresh() -> None:
+def auto_refresh(daily_market: bool) -> None:
     retry_after: dict[str, float] = {}
     while True:
         try:
-            refresh_due(datetime.now(BJ), retry_after)
+            refresh_due(datetime.now(BJ), retry_after, daily_market)
         except OSError as e:
             print(f"  读写数据快照失败: {e}", flush=True)
         time.sleep(60)
@@ -281,16 +295,26 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--no-fetch", action="store_true", help="不自动抓数据")
+    ap.add_argument("--market-refresh", choices=("daily", "weekly"),
+                    default="daily", help="美股同步频率（默认每天）")
+    ap.add_argument("--refresh-now", action="store_true", help="立即同步美股和待办，然后退出")
     args = ap.parse_args()
+    daily_market = args.market_refresh == "daily"
 
-    if not args.no_fetch:
-        threading.Thread(target=auto_refresh, daemon=True).start()
+    if args.refresh_now:
+        todo_ok = refresh_todos()
+        market_ok = refresh_market(daily_market)
+        raise SystemExit(0 if todo_ok and market_ok else 1)
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    if not args.no_fetch:
+        threading.Thread(target=auto_refresh, args=(daily_market,), daemon=True).start()
+
     print("kindle-dash 已启动")
     print(f"  看板:      http://{lan_ip()}:{args.port}/today.png")
     print(f"  原始数据:  http://{lan_ip()}:{args.port}/data.json")
-    print(f"  自动抓数据: {'关' if args.no_fetch else '北京时间每天 08:00 待办，每周一 08:00 美股大事'}")
+    market_schedule = "每天 08:00（滚动 7 天）" if daily_market else "每周一 08:00"
+    print(f"  自动抓数据: {'关' if args.no_fetch else f'北京时间每天 08:00 待办，美股{market_schedule}'}")
     print("  Ctrl-C 退出")
     try:
         srv.serve_forever()

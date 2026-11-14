@@ -120,10 +120,11 @@ def main() -> int:
     cn = load_cn_names(here)
     us = load_us_symbols(here)
     today = datetime.now(et_time.BJ).date()
+    window = [today + timedelta(days=i) for i in range(args.days)]
+    date_order = {d.strftime("%m-%d"): i for i, d in enumerate(window)}
     picked: list[dict] = []
     failed = False
-    for i in range(args.days):
-        d = today + timedelta(days=i)
+    for d in window:
         if d.weekday() >= 5:            # 周末没有财报
             continue
         try:
@@ -174,11 +175,7 @@ def main() -> int:
     if mf.exists():
         try:
             for m in json.loads(mf.read_text(encoding="utf-8")).get("events", []):
-                try:
-                    md = datetime.strptime(m["date"], "%m-%d").replace(year=today.year).date()
-                except (ValueError, KeyError):
-                    continue
-                if today <= md < today + timedelta(days=args.days):
+                if m.get("date") in date_order:
                     macro.append({"date": m["date"], "symbol": "",
                                   "title": m.get("title", ""),
                                   "when": m.get("when", ""),
@@ -191,7 +188,7 @@ def main() -> int:
         picked.sort(key=lambda p: p["cap"], reverse=True)
         picked = picked[:room]
 
-    picked = sorted(macro + picked, key=lambda p: p["date"])
+    picked = sorted(macro + picked, key=lambda p: date_order[p["date"]])
     if len(picked) > args.max_rows:
         picked = picked[: args.max_rows]
 
