@@ -5,11 +5,11 @@
 架构是"哑终端"：**电脑渲染整屏图，屏幕只负责显示这张图**。改版式 = 改 Python，设备端一辈子不用动。
 
 ```
-待办数据（todos.md / todos.json）
+Nasdaq 财报、Newsquawk 宏观日历、滴答清单
         │
         ▼
-render.py（Mac，Pillow）  ──►  1072×1448 的 1-bit PNG
-        │ HTTP（局域网）
+serve.py + render.py（VPS 或 Mac，Pillow） ──► 1072×1448 的黑白 PNG
+        │ Kindle 发起 HTTP 请求，服务端按需渲染
         ▼
 Kindle：wget + eips       ──►  画到墨水屏
 ```
@@ -17,10 +17,10 @@ Kindle：wget + eips       ──►  画到墨水屏
 ```
 kindle-dash/
 ├─ render.py          排版 + 渲染
-├─ serve.py           局域网服务端，每 6 小时自动重抓数据
+├─ serve.py           HTTP 服务，按各数据源的计划自动同步
 ├─ fetch_market.py    抓 Nasdaq 财报日历（零 key）
 ├─ fetch_macro.py     抓 Newsquawk 宏观日历（零 key）
-├─ data/board.json    渲染唯一认的数据（两个 fetch 合并产出）
+├─ data/board.json    看板快照，财报宏观和待办可以独立更新
 ├─ data/macro.json    宏观事件（自动生成，也可手改）
 ├─ data/company_cn.json  代码 → 中文名
 ├─ out/today.png      渲染产物
@@ -47,7 +47,7 @@ python3 serve.py
 - `/todos.json` 原始数据
 - `/draw.txt` 布局指令流（调试用）
 
-改 `todos.md` 后刷新浏览器即可，服务端每次请求都重新渲染。
+没有 `data/board.json` 时可以用 `todos.md` 预览。每次图片请求都用本地快照重新渲染，不会访问数据源。
 
 ## 2. 部署到 Kindle
 
@@ -165,7 +165,13 @@ python3 fetch_market.py --days 10 --min-cap 50 --per-day 1
 4. 整屏放不下就按市值砍到 `--max-rows`，再按日期排回来
 5. 市值 ≥ 5000 亿美元的直接在屏上**反白**（黑底白字），一眼就能扫到
 
-`serve.py` 每 6 小时自动重抓一次（`--refresh-hours` 可调，`--no-fetch` 关掉）。
+`serve.py` 按北京时间调度：
+
+- **美股大事**（财报和宏观日历）：每周一 08:00 同步。
+- **滴答清单**：每天 08:00 同步。
+- 若错过同步时间，服务恢复后补跑；已经同步过的不会因重启重抓。失败时保留上次看板数据，每 30 分钟重试失败项。
+
+`--no-fetch` 可关闭自动同步。Kindle 默认仍每 10 分钟拉图并轮播，每页页脚显示该数据源最近一次成功同步的日期和时间。
 
 ### 数据契约
 
@@ -173,7 +179,8 @@ python3 fetch_market.py --days 10 --min-cap 50 --per-day 1
 
 ```json
 {
-  "updated": "2026-10-31T10:25",
+  "market_updated": "2026-11-02T08:00:00+08:00",
+  "todo_updated": "2026-11-03T08:00:00+08:00",
   "market": [
     {"date": "11-02", "symbol": "AAPL", "title": "Apple",
      "when": "盘后", "cap": 5092, "hot": true}
@@ -199,7 +206,7 @@ python3 fetch_macro.py --dry-run   # 先看结果
 
 **为什么不用 FRED / firecrawl**：FRED 要注册（且得用 Create New Account，不是 Sign In）；firecrawl 未登录且搜索返回散文、要 LLM 抽取、按次计费 —— 都不适合无人值守的定时任务。
 
-> 兜底：如果哪天 Newsquawk 改了版式，脚本会报"没解析出事件"并**保留原文件不动**，`data/macro.json` 仍可手工维护。
+> 兜底：如果新版周报未发布，或 Newsquawk 改了版式导致周报无法识别，会**保留上一份看板**并重试。
 
 ## 5. 手势操作
 

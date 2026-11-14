@@ -128,6 +128,7 @@ def main() -> int:
     here = Path(__file__).resolve().parent
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--current-week", action="store_true", help="等待本周或下周的周报")
     ap.add_argument("--min-score", type=int, default=60, help="低于这个分数的事件不显示")
     ap.add_argument("-o", "--out", type=Path, default=here / "data" / "macro.json")
     args = ap.parse_args()
@@ -135,17 +136,20 @@ def main() -> int:
     url = latest_edition()
     body, headline = article_body(url)
     start = week_start(headline)
-    events = parse_events(body)
+    today = datetime.now(et_time.BJ).date()
+    if args.current_week and start < today - timedelta(days=today.weekday()):
+        print("新一周的宏观日历还没发布，保留原文件不动")
+        return 1
 
-    if not events:
+    if not re.search(r"\b(?:MON|TUE|WED|THU|FRI):", body.split("WEEK AHEAD")[0]):
         print("没解析出事件，保留原文件不动")
         return 1
 
     rows = []
     per_day: dict[int, int] = {}
-    for e in events:
+    for e in parse_events(body):
         d = start + timedelta(days=e["offset"])
-        if d < date.today():                 # 已经过去的不显示
+        if d < today:                        # 已经过去的不显示
             continue
         if e["score"] < args.min_score:
             continue

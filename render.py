@@ -27,6 +27,7 @@ from typing import Iterable
 
 from PIL import Image, ImageDraw, ImageFont
 
+from board_store import update_time
 import et_time
 
 # ---------------------------------------------------------------- 设备与配色
@@ -419,21 +420,22 @@ def event_day(raw: str, now: datetime) -> tuple[str, str]:
     return (WEEKDAYS[d.weekday()], f"{int(mon)}/{int(day)}")
 
 
-def _footer_ops(meta: dict, now: datetime, page: int | None = None,
-                total: int | None = None) -> list[tuple]:
+def _footer_ops(meta: dict, page: str, page_index: int, total: int) -> list[tuple]:
     ops: list[tuple] = []
     fy = H - FOOTER_H
     ops.append(("line", MARGIN, fy, W - MARGIN, fy, 2))
-    updated = meta.get("updated")
-    if isinstance(updated, str) and len(updated) >= 16:
-        left = f"更新于 {updated[11:16]}"
+    market_time = update_time(meta.get("market_updated") or meta.get("updated"))
+    todo_time = update_time(meta.get("todo_updated"))
+    if page == "all" and market_time and todo_time:
+        left = f"美股 {market_time:%m/%d %H:%M}   待办 {todo_time:%m/%d %H:%M}"
     else:
-        left = f"更新于 {now.strftime('%H:%M')}"
+        stamp = {"market": market_time, "todo": todo_time}.get(page, market_time or todo_time)
+        left = f"数据更新于 {stamp:%m/%d %H:%M}" if stamp else "数据尚未同步"
     ops.append(("text", MARGIN, fy + FOOTER_H // 2 + 4, 26, "body", INK, "lm", left))
 
     right = ""
-    if page is not None and total:
-        right = f"{page + 1}/{total}"          # 轮播页码
+    if total > 1:
+        right = f"{page_index + 1}/{total}"          # 轮播页码
     batt = meta.get("battery")
     if batt is not None:
         right = f"电量 {batt}%" + (f"  {right}" if right else "")
@@ -573,7 +575,7 @@ def compose_board(data: dict, meta: dict, stamp: str | None = None,
                   project: str | None = None) -> tuple[list[tuple], int]:
     """page: all / market / todo —— 轮播时每页各占满整屏。"""
     ops: list[tuple] = []
-    now = datetime.now()
+    now = datetime.now(et_time.BJ)
     market_all = data.get("market", [])
     family_all = data.get("family", [])
 
@@ -628,9 +630,7 @@ def compose_board(data: dict, meta: dict, stamp: str | None = None,
                                  y, bottom, now, paged=(page != "all"),
                                  title=project or "待办事项")
 
-    ops.extend(_footer_ops(meta, now,
-                           page_index if page_total > 1 else None,
-                           page_total if page_total > 1 else None))
+    ops.extend(_footer_ops(meta, page, page_index, page_total))
     return ops, len(market) + shown
 
 
@@ -648,7 +648,7 @@ def compose_any(src: Path, meta_extra: dict | None = None,
 
     meta: dict = dict(meta_extra or {})
     if board is not None:
-        for k in ("updated", "battery"):
+        for k in ("updated", "market_updated", "todo_updated", "battery"):
             if k in board and k not in meta:
                 meta[k] = board[k]
         ops, count = compose_board(board, meta, stamp=stamp, page=page,

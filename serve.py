@@ -8,7 +8,7 @@
 
 路由：
     GET /screen        给 Kindle 浏览器看：整屏图 + 每 15 分钟自动刷新（越狱前的过渡）
-    GET /today.png     单张整屏图，每次请求都按最新 todos.md 重渲染
+    GET /today.png     单张整屏图，每次请求都按本地数据快照重渲染
     GET /todos.json    原始数据
     GET /draw.txt      布局指令流
     GET /              一个很土的首页，告诉你地址和二维码
@@ -28,11 +28,13 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import render as R
+from board_store import merge_todos, read_json, update_time, write_json
+from et_time import BJ
 
 HERE = Path(__file__).resolve().parent
 
@@ -49,6 +51,10 @@ TICKTICK_PROJECTS = "收集箱,准备学习"
 
 # 刷新间隔（秒）。设备每轮会来读 /interval.txt，所以改这里 + 重启服务即可生效
 REFRESH_INTERVAL = 600
+
+# 数据同步使用北京时间，独立于 Kindle 的刷屏间隔。
+SYNC_HOUR = 8
+SYNC_RETRY_SECONDS = 30 * 60
 
 # 每页能放几条。条数超了就自动分页
 MARKET_PER_PAGE = 9
@@ -101,26 +107,59 @@ def build(page: str = "all", idx: int = 0, total: int = 1,
     return buf.getvalue(), count, meta
 
 
-def run_fetchers() -> None:
-    """先抓宏观日历，再抓财报并把两边合并成 board.json。"""
-    # 顺序有讲究：先宏观、再待办，最后财报（财报会把两边合并成 board.json）
-    jobs = (["fetch_macro.py"],
-            ["fetch_ticktick.py", "--all", "--max", "10", "--projects", TICKTICK_PROJECTS],
-            ["fetch_market.py"])
-    for cmd in jobs:
-        try:
-            # cmd[0] 是脚本，后面是它的参数
-            subprocess.run([sys.executable, str(HERE / cmd[0])] + list(cmd[1:]),
-                           cwd=str(HERE), timeout=300, check=False)
-        except Exception as e:                       # noqa: BLE001
-            print(f"  {script} 失败: {e}")
+def run_fetch(script: str, *args: str) -> bool:
+    try:
+        subprocess.run([sys.executable, str(HERE / script), *args],
+                       cwd=HERE, timeout=300, check=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  {script} 同步失败: {e}", flush=True)
+        return False
+    return True
 
 
-def auto_refresh(interval_h: float) -> None:
-    run_fetchers()                                   # 启动先抓一次
+def sync_todos() -> dict:
+    data = HERE / "data"
+    board = read_json(data / "board.json")
+    if merge_todos(board, data / "todos.json"):
+        write_json(data / "board.json", board)
+    return board
+
+
+def sync_cutoffs(now: datetime) -> tuple[datetime, datetime]:
+    """最近一次已到的每天、每周同步时间。"""
+    now = now.astimezone(BJ)
+    daily = now.replace(hour=SYNC_HOUR, minute=0, second=0, microsecond=0)
+    if daily > now:
+        daily -= timedelta(days=1)
+    weekly = daily - timedelta(days=daily.weekday())
+    return daily, weekly
+
+
+def refresh_due(now: datetime, retry_after: dict[str, float]) -> None:
+    daily, weekly = sync_cutoffs(now)
+    board = sync_todos()
+    todo_stamp = update_time(board.get("todo_updated"))
+    market_stamp = update_time(board.get("market_updated") or board.get("updated"))
+
+    if (todo_stamp is None or todo_stamp < daily) and time.monotonic() >= retry_after.get("todo", 0):
+        if run_fetch("fetch_ticktick.py", "--all", "--max", "10", "--projects", TICKTICK_PROJECTS):
+            sync_todos()
+        else:
+            retry_after["todo"] = time.monotonic() + SYNC_RETRY_SECONDS
+
+    if (market_stamp is None or market_stamp < weekly) and time.monotonic() >= retry_after.get("market", 0):
+        if not (run_fetch("fetch_macro.py", "--current-week") and run_fetch("fetch_market.py")):
+            retry_after["market"] = time.monotonic() + SYNC_RETRY_SECONDS
+
+
+def auto_refresh() -> None:
+    retry_after: dict[str, float] = {}
     while True:
-        time.sleep(max(600.0, interval_h * 3600))
-        run_fetchers()
+        try:
+            refresh_due(datetime.now(BJ), retry_after)
+        except OSError as e:
+            print(f"  读写数据快照失败: {e}", flush=True)
+        time.sleep(60)
 
 
 def lan_ip() -> str:
@@ -241,18 +280,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--refresh-hours", type=float, default=0.5, help="数据刷新间隔（小时）")
     ap.add_argument("--no-fetch", action="store_true", help="不自动抓数据")
     args = ap.parse_args()
 
     if not args.no_fetch:
-        threading.Thread(target=auto_refresh, args=(args.refresh_hours,), daemon=True).start()
+        threading.Thread(target=auto_refresh, daemon=True).start()
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print("kindle-dash 已启动")
     print(f"  看板:      http://{lan_ip()}:{args.port}/today.png")
     print(f"  原始数据:  http://{lan_ip()}:{args.port}/data.json")
-    print(f"  自动抓数据: {'关' if args.no_fetch else f'每 {args.refresh_hours} 小时'}")
+    print(f"  自动抓数据: {'关' if args.no_fetch else '北京时间每天 08:00 待办，每周一 08:00 美股大事'}")
     print("  Ctrl-C 退出")
     try:
         srv.serve_forever()

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import requests   # 用 requests 而不是 urllib：后者在 macOS 的 Python 上常常验不过根证书
 
+from board_store import merge_todos, read_json, write_json
 import et_time
 
 API = "https://api.nasdaq.com/api/calendar/earnings?date={}"
@@ -118,8 +119,9 @@ def main() -> int:
 
     cn = load_cn_names(here)
     us = load_us_symbols(here)
-    today = date.today()
+    today = datetime.now(et_time.BJ).date()
     picked: list[dict] = []
+    failed = False
     for i in range(args.days):
         d = today + timedelta(days=i)
         if d.weekday() >= 5:            # 周末没有财报
@@ -128,6 +130,7 @@ def main() -> int:
             rows = fetch_day(d)
         except Exception as e:
             print(f"  {d} 拉取失败: {e}", flush=True)
+            failed = True
             continue
         rows = [r for r in rows if (r.get("symbol") or "").strip()]
         rows.sort(key=lambda r: cap(r.get("marketCap")), reverse=True)
@@ -161,12 +164,9 @@ def main() -> int:
             })
         print(f"  {d}  {len(rows)} 家 → 留下 {min(len(chosen), args.per_day)}", flush=True)
 
-    old = {}
-    if args.out.exists():
-        try:
-            old = json.loads(args.out.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            old = {}
+    if failed:
+        print("财报没有抓全，保留上一份看板")
+        return 1
 
     # 宏观事件优先占位：手动维护在 data/macro.json
     macro: list[dict] = []
@@ -195,22 +195,12 @@ def main() -> int:
     if len(picked) > args.max_rows:
         picked = picked[: args.max_rows]
 
-    # 家庭待办：由 fetch_ticktick.py 产出
-    fam_file = here / "data" / "todos.json"
-    family = []
-    if fam_file.exists():
-        try:
-            family = json.loads(fam_file.read_text(encoding="utf-8")).get("items", [])
-        except json.JSONDecodeError:
-            family = []
-
-    board = {
-        "updated": datetime.now().isoformat(timespec="minutes"),
-        "market": picked,
-        "family": family,
-    }
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(board, ensure_ascii=False, indent=2), encoding="utf-8")
+    board = read_json(args.out)
+    stamp = datetime.now(et_time.BJ).isoformat(timespec="seconds")
+    board.update(updated=stamp, market_updated=stamp, market=picked)
+    merge_todos(board, here / "data" / "todos.json")
+    board.setdefault("family", [])
+    write_json(args.out, board)
 
     print(f"\n共 {len(picked)} 条 → {args.out}")
     for p in picked:

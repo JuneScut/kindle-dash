@@ -16,17 +16,18 @@ import json
 import re
 import time
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import requests
+
+from board_store import write_json
+from et_time import BJ
 
 REGIONS = {
     "cn": {"web": "https://dida365.com", "api": "https://api.dida365.com"},
     "intl": {"web": "https://ticktick.com", "api": "https://api.ticktick.com"},
 }
 
-BJ = ZoneInfo("Asia/Shanghai")
 HERE = Path(__file__).resolve().parent
 CLIENT_FILE = HERE / "data" / "ticktick_client.json"
 TOKEN_FILE = HERE / "data" / "ticktick_token.json"
@@ -140,15 +141,15 @@ def main() -> int:
         sources.insert(0, (-1, {"name": "收集箱"},
                            f"{api}/open/v1/project/inbox/data"))
 
-    today = datetime.now().date()
+    today = datetime.now(BJ).date()
     horizon = today + timedelta(days=args.days)
     rows: list[dict] = []
 
     for pidx, p, url in sources:
         pr = requests.get(url, headers=h, timeout=30)
         if pr.status_code != 200:
-            print(f"  {p.get('name')}: 拉取失败 {pr.status_code}")
-            continue
+            print(f"  {p.get('name')}: 拉取失败 {pr.status_code}，保留上一份待办")
+            return 1
         for t in (pr.json().get("tasks") or []):
             if t.get("status") == 2:          # 已完成
                 continue
@@ -195,9 +196,8 @@ def main() -> int:
         for k in ("_dated", "_sort", "_proj", "_order"):
             r.pop(k, None)
 
-    OUT_FILE.parent.mkdir(exist_ok=True)
-    OUT_FILE.write_text(json.dumps({"items": rows}, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
+    write_json(OUT_FILE, {"updated": datetime.now(BJ).isoformat(timespec="seconds"),
+                          "items": rows})
     print(f"共 {len(rows)} 条 → {OUT_FILE}")
     for r in rows:
         print(f"  {r['due'] or '   ':<6} {r['title'][:24]:<26} @{r['tag']}")
